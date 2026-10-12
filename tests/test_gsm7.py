@@ -93,11 +93,29 @@ def test_lookalike_mode_keeps_meaningful_unicode():
     assert segment_info(normalise(text)).encoding == "UCS-2"
 
 
-def test_strict_mode_guarantees_gsm7():
+def test_strict_mode_transliterates_a_latin_reply_and_drops_its_emoji():
     text = "Caf\u00e9 cr\u00e8me \u00e1 \u0142 \U0001f600 done \u2013 \u00bd price"
     out = normalise(text, mode="strict")
     assert out == "Caf\u00e9 cr\u00e8me a l done - 1/2 price"
     assert is_gsm7(out)
+
+
+@pytest.mark.parametrize("text", [
+    "\u0412\u0430\u0448 \u0437\u0430\u043a\u0430\u0437 1001 \u0433\u043e\u0442\u043e\u0432!",
+    "\u039a\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1",             # Greek
+    "\u4f60\u597d",                                                     # Chinese
+    "Order \u0661\u0662\u0663 has shipped",                             # Arabic-Indic digits
+    "Your order is ready. "
+    "\u0412\u0430\u0448 \u0437\u0430\u043a\u0430\u0437 \u0433\u043e\u0442\u043e\u0432.",
+], ids=["cyrillic", "greek", "chinese", "foreign-digits", "mixed-scripts"])
+def test_strict_mode_never_drops_a_letter_or_a_digit(text):
+    # transliterating would lose words or numbers, so the reply is sent as written (UCS-2)
+    assert normalise(text, mode="strict") == text
+
+
+@pytest.mark.parametrize("text", ["\U0001f44d", "\U0001f389\U0001f389", "!!! \U0001f389"])
+def test_strict_mode_never_reduces_a_reply_to_nothing(text):
+    assert normalise(text, mode="strict") == text
 
 
 def test_off_mode_changes_nothing():

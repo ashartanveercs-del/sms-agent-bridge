@@ -12,12 +12,13 @@ SENDER = "+15550000101"
 CALLBACK = "https://sms.example.com/twilio/status"
 
 
-def make_bridge(agent, gateway: FakeGateway | None = None, **kwargs):
+def make_bridge(agent, gateway: FakeGateway | None = None, *, gsm_mode: str = "lookalikes",
+                **kwargs):
     gateway = gateway or FakeGateway()
     delivery = DeliveryMonitor(gateway, status_callback_url=CALLBACK, recheck_delay=0)
     kwargs.setdefault("agent_timeout", 1.0)
-    bridge = Bridge(agent=agent, gateway=gateway, composer=OutboundComposer(), delivery=delivery,
-                    retry_backoff=0, status_callback_url=CALLBACK, **kwargs)
+    bridge = Bridge(agent=agent, gateway=gateway, composer=OutboundComposer(gsm_mode=gsm_mode),
+                    delivery=delivery, retry_backoff=0, status_callback_url=CALLBACK, **kwargs)
     return bridge, gateway, delivery
 
 
@@ -177,6 +178,18 @@ async def test_internal_errors_inside_a_reply_are_stripped_before_sending():
     bridge, gw, _ = make_bridge(agent)
     await bridge.handle(inbound())
     assert gw.bodies_to(SENDER) == ["Done.\nAnything else?"]
+
+
+async def test_strict_mode_never_turns_a_real_reply_into_silence_or_punctuation():
+    # Russian ("Hello", "Your order 1001 is ready!"), Chinese ("Hello") and a thumbs-up:
+    # none of it can be GSM-7 without losing the words, so it goes out as written (UCS-2)
+    for reply in ("Привет", "\U0001f44d", "你好",
+                  "Ваш заказ 1001 "
+                  "готов!"):
+        bridge, gw, _ = make_bridge(ScriptedAgent(reply), gsm_mode="strict")
+        result = await bridge.handle(inbound())
+        assert gw.bodies_to(SENDER) == [reply]
+        assert result.outcome == "replied"
 
 
 async def test_long_replies_go_out_as_ordered_parts():

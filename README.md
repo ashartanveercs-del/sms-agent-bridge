@@ -8,7 +8,7 @@ strips internal errors before they reach a phone, and checks that every reply wa
 
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-264%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-273%20passing-brightgreen)
 
 ```text
 Phone   +1 555 000 0101:  "is repair 1001 ready? and when are you open?"
@@ -30,7 +30,7 @@ Bridge  -> phone:          "Good news - repair #1001 is ready. We're open Tue-Sa
 | **Delivery verification** | Status callbacks plus one delayed status re-check. A delivery failure gets exactly one resend, and none at all for opt-outs, landlines or carrier filtering. |
 | **Pluggable agent** | `webhook` (your own agent behind HTTP), `openai` (any OpenAI-compatible `/chat/completions`, with per-sender history) or `echo` for demos. |
 | **Guard rails** | Per-sender rate limit and backlog caps with one polite notice per window, carrier keywords (STOP, HELP, ...) kept away from the agent, optional sender allowlist, masked phone numbers in logs, dry-run mode and `/healthz` counters. |
-| **Tested without a phone** | 264 tests, all offline. Twilio, the model and your agent are faked. A concurrency proof fires 12 senders at once through the real HTTP app. |
+| **Tested without a phone** | 273 tests, all offline. Twilio, the model and your agent are faked. A concurrency proof fires 12 senders at once through the real HTTP app. |
 
 ## Architecture
 
@@ -116,9 +116,13 @@ cost two septets, and that pair is never split across parts. In UCS-2, emoji are
 pairs that cost two units and are never split either. Normalisation is applied only when it
 makes the *whole* message GSM-7. A reply that needs UCS-2 anyway (emoji, non-Latin scripts) is
 sent exactly as written, because rewriting it gains nothing and can even make it longer: "…" is
-one unit, "..." is three. `strict` mode transliterates and drops instead, and always produces
-GSM-7. Twilio rejects bodies over 1,600 characters (error 21617), so long replies are split at
-the best boundary available (paragraph, line, sentence, word), measured in UTF-16 units.
+one unit, "..." is three. `strict` mode goes further: it transliterates accented letters and
+drops emoji and symbols to reach GSM-7, but never at the cost of the words. If it would drop a
+letter or a digit, or drop symbols and leave no letter or digit behind, the reply goes out as
+written (UCS-2) instead, so text in another script, or a reply made only of emoji, never turns
+into silence or stray punctuation. Twilio rejects bodies over 1,600 characters (error 21617),
+so long replies are split at the best boundary available (paragraph, line, sentence, word),
+measured in UTF-16 units.
 
 **4. Failure is not silence, and an error is not a reply.** The agent contract makes silence
 explicit: an empty reply, `NO_REPLY` or HTTP 204 means "nothing to say". Everything else that
@@ -257,7 +261,7 @@ on top of them.
 | `MAX_QUEUED_PER_SENDER` / `MAX_QUEUED_TOTAL` | `10` / `1000` | backlog caps; overflow gets one busy notice per window |
 | `RATE_LIMIT_MESSAGES` / `RATE_LIMIT_WINDOW_SECONDS` | `10` / `60` | per-sender sliding window; `0` disables it |
 | `ALLOWED_SENDERS` | - | comma-separated numbers; empty means anyone |
-| `GSM_MODE` | `lookalikes` | `lookalikes`, `strict` (always GSM-7, lossy) or `off` |
+| `GSM_MODE` | `lookalikes` | `lookalikes`, `strict` (also drops emoji and symbols to reach GSM-7, never letters or digits) or `off` |
 | `MAX_REPLY_PARTS` | `3` | messages per reply, each at most 1,600 characters |
 | `STATUS_RECHECK_SECONDS` | `30` | delay before the status re-check; `0` disables it |
 | `RESEND_ON_FAILURE` / `RESEND_SUFFIX` | `true` / - | one resend after `undelivered`/`failed`; the suffix is added only if it still fits |
@@ -269,7 +273,7 @@ on top of them.
 ## Testing
 
 ```bash
-pytest                              # 264 tests, ~4 s, no Twilio, model or network beyond localhost
+pytest                              # 273 tests, ~4 s, no Twilio, model or network beyond localhost
 ruff check src tests examples
 ```
 

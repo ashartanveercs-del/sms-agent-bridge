@@ -146,8 +146,12 @@ def normalise(text: str, mode: str = "lookalikes") -> str:
       invisible characters, ...) *if that makes the whole message GSM-7*. A message that
       needs UCS-2 anyway (emoji, non-Latin scripts) is left exactly as written: rewriting it
       gains nothing and can even make it longer ("…" is one UTF-16 unit, "..." is three).
-    * ``strict``     - always produce GSM-7: also transliterate accented letters to their base
-      letter and drop anything that has no GSM-7 equivalent (emoji, other scripts). Lossy.
+    * ``strict``     - also transliterate accented letters to their base letter and drop
+      symbols and emoji that have no GSM-7 equivalent. Lossy, but never for the words: if that
+      would drop a letter or a digit (a reply in another script), or drop symbols and leave no
+      letter or digit behind (a reply made only of emoji), the text is left as written - which
+      is what ``lookalikes`` does with it too. Silence or stray punctuation is worse than
+      paying for UCS-2.
     """
     if mode not in MODES:
         raise ValueError(f"unknown GSM mode {mode!r}; expected one of {', '.join(MODES)}")
@@ -156,21 +160,30 @@ def normalise(text: str, mode: str = "lookalikes") -> str:
     mapped = text.replace("\r\n", "\n").translate(_TRANSLATION)
     if mode == "lookalikes":
         return mapped if is_gsm7(mapped) else text
-    return _transliterate(mapped)
+    result, dropped = _transliterate(mapped)
+    if dropped and (_has_word_characters(dropped) or not _has_word_characters(result)):
+        return text
+    return result
 
 
-def _transliterate(text: str) -> str:
+def _has_word_characters(text: str) -> bool:
+    return any(ch.isalnum() for ch in text)
+
+
+def _transliterate(text: str) -> tuple[str, str]:
+    """The GSM-7 transliteration of `text`, and the characters it had to drop."""
     out: list[str] = []
-    dropped = False
+    dropped: list[str] = []
     for ch in text:
         if ch in _ALPHABET:
             out.append(ch)
             continue
         replacement = _strict_char(ch)
-        dropped = dropped or not replacement
+        if not replacement:
+            dropped.append(ch)
         out.append(replacement)
     result = "".join(out)
-    return _SPACE_RUNS.sub(" ", result) if dropped else result
+    return (_SPACE_RUNS.sub(" ", result) if dropped else result), "".join(dropped)
 
 
 def _strict_char(ch: str) -> str:

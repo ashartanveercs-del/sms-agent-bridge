@@ -32,7 +32,7 @@ def test_inspect_reports_what_the_sanitiser_removed(capsys):
     assert "ValueError" not in out.split("part 1/1", 1)[1]
 
 
-def test_inspect_strict_mode_guarantees_gsm7(capsys):
+def test_inspect_strict_mode_makes_a_latin_reply_gsm7(capsys):
     main(["inspect", "--mode", "strict", "caf" + chr(0xE9) + " " + chr(0x1F600)])
     out = capsys.readouterr().out
     assert "outbound  GSM-7" in out
