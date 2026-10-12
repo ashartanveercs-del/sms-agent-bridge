@@ -8,6 +8,15 @@ Failure policy - the customer always hears back, and never sees an error:
   only double the delay before the same outcome. The sender gets a "taking too long" note.
 * An explicit empty reply (or the `NO_REPLY` token) means the agent chose silence: nothing is
   sent. Silence is only ever a decision, never the side effect of a failure.
+
+A timeout ends the wait, not the turn. Cancelling a call to a remote agent only hangs up the
+bridge's end: the agent usually keeps working, and if the sender's next text reached it then,
+it would run two turns of one conversation at once - the lost update the scheduler exists to
+prevent. So a timed-out call stays open, and the turn (its worker and its sender) ends only when
+the agent answers, or `agent_turn_limit` seconds after the call started, when the call is
+closed. The late answer is dropped: the sender already has the timeout note. A backend whose
+turn really does end when its call is cancelled (`cancel_ends_turn = True`, such as the echo
+and OpenAI-compatible backends) is cancelled at the timeout instead.
 """
 
 from __future__ import annotations
@@ -35,7 +44,11 @@ SILENT_TOKENS = ("NO_REPLY",)
 
 
 class AgentTimeout(Exception):
-    pass
+    """The agent did not answer in time. `call` is that call, still running, if it was kept open."""
+
+    def __init__(self, call: asyncio.Future[object] | None = None) -> None:
+        super().__init__("the agent did not answer in time")
+        self.call = call
 
 
 @dataclass(frozen=True)
@@ -56,8 +69,8 @@ class HandleResult:
 class Bridge:
     def __init__(self, *, agent: AgentBackend, gateway: MessagingGateway,
                  composer: OutboundComposer, delivery: DeliveryMonitor,
-                 agent_timeout: float = 120.0, retry_backoff: float = 1.0,
-                 status_callback_url: str | None = None,
+                 agent_timeout: float = 120.0, agent_turn_limit: float = 600.0,
+                 retry_backoff: float = 1.0, status_callback_url: str | None = None,
                  timeout_reply: str = DEFAULT_TIMEOUT_REPLY,
                  failure_reply: str = DEFAULT_FAILURE_REPLY,
                  silent_tokens: Iterable[str] = SILENT_TOKENS) -> None:
@@ -66,6 +79,7 @@ class Bridge:
         self.composer = composer
         self.delivery = delivery
         self.agent_timeout = agent_timeout
+        self.agent_turn_limit = agent_turn_limit
         self.retry_backoff = retry_backoff
         self.status_callback_url = status_callback_url
         self.timeout_reply = timeout_reply
@@ -78,19 +92,27 @@ class Bridge:
         request = AgentRequest(session_id=session_id_for(message.sender), sender=message.sender,
                                text=message.body, message_sid=message.sid, media=message.media)
         started = time.monotonic()
+        still_running: asyncio.Future[object] | None = None
         try:
             raw, outcome = await self._ask(request), "replied"
-        except AgentTimeout:
+        except AgentTimeout as timeout:
             log.warning("agent timed out after %.0fs for %s", self.agent_timeout, who)
-            raw, outcome = self.timeout_reply, "agent_timeout"
+            raw, outcome, still_running = self.timeout_reply, "agent_timeout", timeout.call
         except Exception as err:  # AgentError, or a bug in a custom backend
             log.warning("agent failed for %s: %s", who, err)
             raw, outcome = self.failure_reply, "agent_failed"
+        try:
+            return await self._respond(message.sender, raw, outcome, started)
+        finally:
+            if still_running is not None:
+                await self._outlast(still_running, who)
 
+    async def _respond(self, to: str, raw: str, outcome: str, started: float) -> HandleResult:
+        who = mask_number(to)
         if outcome == "replied" and raw.strip().upper() in self._silent | {""}:
             log.info("agent chose not to reply to %s", who)
             return self._done(HandleResult("no_reply"))
-        sent = await self._deliver(message.sender, raw)
+        sent = await self._deliver(to, raw)
         if sent is None:
             return self._done(HandleResult("send_failed"))
         parts, segments = sent
@@ -110,9 +132,7 @@ class Bridge:
     async def _ask(self, request: AgentRequest) -> str:
         for attempt in (1, 2):
             try:
-                reply = await asyncio.wait_for(self.agent.reply(request), self.agent_timeout)
-            except TimeoutError as err:
-                raise AgentTimeout from err  # never retried: see module docstring
+                reply = await self._call(request)  # AgentTimeout is never retried
             except AgentError as err:
                 if attempt == 2 or not err.retryable:
                     raise
@@ -124,6 +144,30 @@ class Bridge:
                                  retryable=False)
             return reply
         raise AssertionError("unreachable")
+
+    async def _call(self, request: AgentRequest) -> object:
+        """One call to the agent; raises AgentTimeout once it outlasts `agent_timeout`."""
+        call = asyncio.ensure_future(self.agent.reply(request))
+        if await _finished(call, self.agent_timeout):
+            return call.result()
+        if getattr(self.agent, "cancel_ends_turn", False):
+            await _cancel(call)
+            raise AgentTimeout
+        raise AgentTimeout(call)  # kept open: see module docstring
+
+    async def _outlast(self, call: asyncio.Future[object], who: str) -> None:
+        """Hold the turn until a timed-out call ends, so the sender's next text cannot reach
+        the agent while it is still working on this one."""
+        if await _finished(call, max(0.0, self.agent_turn_limit - self.agent_timeout)):
+            if not call.cancelled():
+                call.exception()  # a late failure changes nothing now; mark it as seen
+            log.info("the agent finished a timed-out turn for %s; its late result was dropped",
+                     who)
+            return
+        self._counts["agent_cut_off"] += 1
+        log.warning("closed an agent call for %s still running after %.0fs; the agent may not "
+                    "have stopped", who, self.agent_turn_limit)
+        await _cancel(call)
 
     async def _deliver(self, to: str, raw: str) -> tuple[int, int] | None:
         plan = self.composer.compose(raw)
@@ -151,5 +195,20 @@ class Bridge:
 
     def stats(self) -> dict[str, int]:
         keys = ("replied", "no_reply", "agent_timeout", "agent_failed", "send_failed",
-                "segments_sent")
+                "agent_cut_off", "segments_sent")
         return {key: self._counts[key] for key in keys}
+
+
+async def _finished(call: asyncio.Future[object], seconds: float) -> bool:
+    """Wait up to `seconds` for `call` to end. If this task is cancelled meanwhile, so is it."""
+    try:
+        await asyncio.wait({call}, timeout=seconds)
+    except asyncio.CancelledError:
+        call.cancel()
+        raise
+    return call.done()
+
+
+async def _cancel(call: asyncio.Future[object]) -> None:
+    call.cancel()
+    await asyncio.gather(call, return_exceptions=True)  # let it unwind and close its connection

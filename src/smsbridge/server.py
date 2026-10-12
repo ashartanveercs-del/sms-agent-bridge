@@ -89,6 +89,7 @@ def create_app(settings: Settings, *, gateway: MessagingGateway | None = None,
                                 gsm_mode=settings.gsm_mode, max_parts=settings.max_reply_parts)
     bridge = Bridge(agent=agent, gateway=gateway, composer=composer, delivery=delivery,
                     agent_timeout=settings.agent_timeout_seconds,
+                    agent_turn_limit=settings.agent_turn_limit_seconds,
                     status_callback_url=settings.status_callback_url,
                     timeout_reply=settings.timeout_reply, failure_reply=settings.failure_reply)
     scheduler: FairScheduler[InboundMessage] = FairScheduler(

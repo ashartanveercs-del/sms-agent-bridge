@@ -1,7 +1,9 @@
+import asyncio
+
 from fakes import FakeGateway, ScriptedAgent
 
 from smsbridge.agents import AgentError, Media
-from smsbridge.bridge import DEFAULT_FAILURE_REPLY, Bridge, InboundMessage
+from smsbridge.bridge import DEFAULT_FAILURE_REPLY, DEFAULT_TIMEOUT_REPLY, Bridge, InboundMessage
 from smsbridge.delivery import DeliveryMonitor
 from smsbridge.outbound import OutboundComposer
 from smsbridge.twilio_gateway import SendError
@@ -79,6 +81,65 @@ async def test_a_timeout_is_not_retried_and_gets_its_own_reply():
     assert len(agent.requests) == 1
     assert gw.bodies_to(SENDER) == ["That is taking a while - please try again."]
     assert result.outcome == "agent_timeout"
+
+
+class SlowAgent:
+    """Works on a turn until `finish` is set, whether or not the bridge is still waiting."""
+
+    def __init__(self, *, cancel_ends_turn: bool | None = None) -> None:
+        self.finish = asyncio.Event()
+        self.cancelled = False
+        if cancel_ends_turn is not None:
+            self.cancel_ends_turn = cancel_ends_turn
+
+    async def reply(self, request) -> str:
+        try:
+            await self.finish.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return "a late answer"
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_a_timed_out_call_stays_open_until_the_agent_finishes():
+    agent = SlowAgent()
+    bridge, gw, _ = make_bridge(agent, agent_timeout=0.05)
+    turn = asyncio.create_task(bridge.handle(inbound()))
+
+    await gw.wait_for_sent(1)                    # the sender hears back at the timeout...
+    assert gw.bodies_to(SENDER) == [DEFAULT_TIMEOUT_REPLY]
+    await asyncio.sleep(0.05)
+    assert not turn.done()                       # ...but the turn holds its sender
+    agent.finish.set()
+
+    result = await asyncio.wait_for(turn, 1)
+    assert result.outcome == "agent_timeout"
+    assert not agent.cancelled
+    assert gw.bodies_to(SENDER) == [DEFAULT_TIMEOUT_REPLY]  # the late answer is dropped
+    assert bridge.stats()["agent_cut_off"] == 0
+
+
+async def test_a_call_still_running_at_the_turn_limit_is_closed():
+    agent = SlowAgent()
+    bridge, gw, _ = make_bridge(agent, agent_timeout=0.05, agent_turn_limit=0.2)
+    result = await asyncio.wait_for(bridge.handle(inbound()), 1)
+    assert result.outcome == "agent_timeout"
+    assert agent.cancelled
+    assert gw.bodies_to(SENDER) == [DEFAULT_TIMEOUT_REPLY]
+    assert bridge.stats()["agent_cut_off"] == 1
+
+
+async def test_a_backend_whose_turn_ends_on_cancel_is_cancelled_at_the_timeout():
+    agent = SlowAgent(cancel_ends_turn=True)
+    bridge, gw, _ = make_bridge(agent, agent_timeout=0.05)
+    result = await asyncio.wait_for(bridge.handle(inbound()), 0.5)
+    assert result.outcome == "agent_timeout"
+    assert agent.cancelled
+    assert gw.bodies_to(SENDER) == [DEFAULT_TIMEOUT_REPLY]
+    assert bridge.stats()["agent_cut_off"] == 0
 
 
 async def test_a_crashing_custom_backend_still_gets_the_fallback():

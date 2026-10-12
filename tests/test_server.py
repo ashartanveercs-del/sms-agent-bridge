@@ -1,6 +1,8 @@
 import asyncio
+from collections import Counter
 
 import pytest
+from aiohttp import web
 from fakes import AUTH_TOKEN, FakeGateway, ScriptedAgent
 from twilio.request_validator import RequestValidator
 
@@ -194,6 +196,56 @@ async def test_status_callbacks_drive_exactly_one_resend(client, gateway):
     assert (first.status, duplicate.status) == (204, 204)
     assert [m["body"] for m in gateway.sent] == ["echo: ping", "echo: ping"]
     assert client.app[DELIVERY].get(reply["sid"]).outcome == "resent"
+
+
+class RemoteAgent:
+    """A webhook agent that finishes what it started even after the caller hangs up, as most
+    web frameworks and agent runtimes do. Records when each turn starts and ends."""
+
+    def __init__(self, *seconds: float) -> None:
+        self.seconds = list(seconds)  # how long each turn takes
+        self.events: list[tuple[str, str]] = []
+        self.running: Counter[str] = Counter()
+        self.overlapping: list[str] = []
+
+    async def handler(self, request: web.Request) -> web.Response:
+        payload = await request.json()
+        reply = await asyncio.shield(self.turn(payload["session_id"], payload["text"]))
+        return web.json_response({"reply": reply})
+
+    async def turn(self, session: str, text: str) -> str:
+        if self.running[session]:
+            self.overlapping.append(session)
+        self.running[session] += 1
+        self.events.append(("start", text))
+        try:
+            await asyncio.sleep(self.seconds.pop(0))
+        finally:
+            self.running[session] -= 1
+            self.events.append(("end", text))
+        return f"answer to {text}"
+
+
+async def test_a_timed_out_turn_keeps_the_senders_next_text_waiting(aiohttp_client,
+                                                                     aiohttp_server, gateway):
+    remote = RemoteAgent(0.5, 0.01)  # the first turn outlasts the bridge's timeout
+    agent_app = web.Application()
+    agent_app.router.add_post("/agent", remote.handler)
+    agent = WebhookAgent(str((await aiohttp_server(agent_app)).make_url("/agent")))
+    settings = make_settings(agent_backend="webhook", agent_timeout_seconds=0.1,
+                             timeout_reply="Still on it - try again shortly.")
+    client = await aiohttp_client(create_app(settings, gateway=gateway, agent=agent))
+
+    await post_signed(client, sms(body="first", sid="SM1"))
+    await asyncio.sleep(0.2)  # the first turn has timed out, but the agent is still on it
+    await post_signed(client, sms(body="second", sid="SM2"))
+    await settled(client.app)
+
+    assert remote.overlapping == []
+    assert remote.events == [("start", "first"), ("end", "first"),
+                             ("start", "second"), ("end", "second")]
+    # the timeout note went out on time; the late answer to "first" is dropped
+    assert gateway.bodies_to(SENDER) == ["Still on it - try again shortly.", "answer to second"]
 
 
 async def test_unsigned_status_callbacks_are_rejected(client):

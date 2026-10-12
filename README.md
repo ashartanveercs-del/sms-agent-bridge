@@ -8,7 +8,7 @@ strips internal errors before they reach a phone, and checks that every reply wa
 
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-254%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-260%20passing-brightgreen)
 
 ```text
 Phone   +1 555 000 0101:  "is repair 1001 ready? and when are you open?"
@@ -30,7 +30,7 @@ Bridge  -> phone:          "Good news - repair #1001 is ready. We're open Tue-Sa
 | **Delivery verification** | Status callbacks plus one delayed status re-check. A delivery failure gets exactly one resend, and none at all for opt-outs, landlines or carrier filtering. |
 | **Pluggable agent** | `webhook` (your own agent behind HTTP), `openai` (any OpenAI-compatible `/chat/completions`, with per-sender history) or `echo` for demos. |
 | **Guard rails** | Per-sender rate limit and backlog caps with one polite notice per window, carrier keywords (STOP, HELP, ...) kept away from the agent, optional sender allowlist, masked phone numbers in logs, dry-run mode and `/healthz` counters. |
-| **Tested without a phone** | 254 tests, all offline. Twilio, the model and your agent are faked. A concurrency proof fires 12 senders at once through the real HTTP app. |
+| **Tested without a phone** | 260 tests, all offline. Twilio, the model and your agent are faked. A concurrency proof fires 12 senders at once through the real HTTP app. |
 
 ## Architecture
 
@@ -130,12 +130,21 @@ goes wrong raises:
 
 A transient failure is retried once. A timeout is *not*: the task is genuinely too long, and a
 second full wait only doubles the delay before the same outcome. Either way, the sender gets a
-neutral message. On the way out, the sanitiser drops whole diagnostic lines (tracebacks with
-their frames, exception and log lines, tool-failure notes, raw JSON error bodies, internal
-paths) and masks credential-shaped strings inside otherwise normal lines. If nothing meaningful
-is left, the fallback reply goes out instead. The rules are anchored and specific. "Your payment
-failed - please update your card" and `https://example.com/var/files/report.pdf` are ordinary
-replies, and the tests pin both sides of that line.
+neutral message.
+
+A timeout ends the wait, not the turn. A remote agent usually keeps working after the bridge
+hangs up, so the sender's next text could reach it mid-turn: the lost update from point 1.
+Instead the timed-out call stays open, and the sender's next text waits until the agent answers
+(the late answer is dropped) or until `AGENT_TURN_LIMIT_SECONDS`, when the call is closed. The
+`echo` and `openai` backends keep their state inside the bridge, so cancelling them really does
+end the turn, and they are cancelled at the timeout.
+
+On the way out, the sanitiser drops whole diagnostic lines (tracebacks with their frames,
+exception and log lines, tool-failure notes, raw JSON error bodies, internal paths) and masks
+credential-shaped strings inside otherwise normal lines. If nothing meaningful is left, the
+fallback reply goes out instead. The rules are anchored and specific. "Your payment failed -
+please update your card" and `https://example.com/var/files/report.pdf` are ordinary replies,
+and the tests pin both sides of that line.
 
 **5. Delivery has two observers and one resend.** `messages.create` succeeds when Twilio
 *queues* a message. Carrier failures arrive minutes later as `undelivered` or `failed`. The
@@ -216,6 +225,10 @@ With `AGENT_BACKEND=webhook`, each message is POSTed to `AGENT_WEBHOOK_URL` as
 `{"session_id", "from", "text", "message_sid", "media"}`, with `Authorization: Bearer
 $AGENT_WEBHOOK_TOKEN` when a token is set. Answer `{"reply": "..."}`. An empty reply, `null` or
 HTTP 204 sends nothing. Key your agent's memory by `session_id`: it is one per phone number.
+While your agent is answering a number's message, that number's next message waits. After
+`AGENT_TIMEOUT_SECONDS` the sender gets `TIMEOUT_REPLY`, but the request stays open until you
+answer (that late answer is not sent) or until `AGENT_TURN_LIMIT_SECONDS`, when the bridge
+closes it and moves on, so stop work on a request whose connection has closed.
 [`examples/agent_webhook_server.py`](examples/agent_webhook_server.py) is a complete,
 runnable one for a fictional bike shop. Put LangGraph, the OpenAI Agents SDK, the Claude Agent
 SDK or anything else behind the same contract.
@@ -237,7 +250,8 @@ on top of them.
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | any OpenAI-compatible endpoint |
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | - | required for `openai` |
 | `SYSTEM_PROMPT` / `HISTORY_TURNS` | short plain-text SMS persona / `12` | `openai` backend |
-| `AGENT_TIMEOUT_SECONDS` | `120` | per attempt; a timeout is never retried |
+| `AGENT_TIMEOUT_SECONDS` | `120` | per attempt; the sender then gets `TIMEOUT_REPLY`, and a timeout is never retried |
+| `AGENT_TURN_LIMIT_SECONDS` | `600` | a timed-out `webhook` call stays open, holding the sender's next text, until the agent answers or this long after it started |
 | `WORKERS` | `8` | agent turns in flight at once |
 | `MAX_QUEUED_PER_SENDER` / `MAX_QUEUED_TOTAL` | `10` / `1000` | backlog caps; overflow gets one busy notice per window |
 | `RATE_LIMIT_MESSAGES` / `RATE_LIMIT_WINDOW_SECONDS` | `10` / `60` | per-sender sliding window; `0` disables it |
@@ -254,7 +268,7 @@ on top of them.
 ## Testing
 
 ```bash
-pytest                              # 254 tests, ~3 s, no Twilio, model or network beyond localhost
+pytest                              # 260 tests, ~4 s, no Twilio, model or network beyond localhost
 ruff check src tests examples
 ```
 
@@ -279,8 +293,11 @@ SDK's `RequestValidator`. CI also runs the concurrency demo and the `inspect` co
   reply in dry-run mode.
 - **The sanitiser is a safety net**, not a substitute for agent-side hygiene. It removes known
   shapes of leaks; it cannot recognise arbitrary sensitive prose.
-- **Isolation needs both sides.** The bridge gives every number its own `session_id` and never
-  runs two turns for one number at once, but a webhook agent must key its memory by that id.
+- **Isolation needs both sides.** The bridge gives every number its own `session_id`, and does
+  not start a number's next turn while the agent is still answering its previous one, even
+  after a timeout. A webhook agent must key its memory by that id, and should stop work when its
+  caller disconnects: a call still running at `AGENT_TURN_LIMIT_SECONDS` is closed, and the
+  sender's next text can then go ahead.
 - **`ALLOWED_SENDERS` is a filter, not authentication**: SMS sender IDs can be spoofed.
 - **`/healthz` is unauthenticated.** It returns counters only, no message data.
 - **State is in memory and per process**: queues, the MessageSid cache and `openai` histories.

@@ -90,6 +90,7 @@ class Settings:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     history_turns: int = 12
     agent_timeout_seconds: float = 120.0
+    agent_turn_limit_seconds: float = 600.0
     workers: int = 8
     max_queued_per_sender: int = 10
     max_queued_total: int = 1000
@@ -154,6 +155,11 @@ class Settings:
 
         allowed = frozenset(filter(None, (normalise_number(n) for n in
                                           (e.text("ALLOWED_SENDERS") or "").split(","))))
+        agent_timeout = e.number("AGENT_TIMEOUT_SECONDS", 120.0, minimum=1.0)
+        turn_limit = e.number("AGENT_TURN_LIMIT_SECONDS", max(600.0, agent_timeout))
+        if turn_limit < agent_timeout:
+            raise ConfigError("AGENT_TURN_LIMIT_SECONDS must be at least AGENT_TIMEOUT_SECONDS "
+                              f"({agent_timeout:g}, got {turn_limit:g})")
         return cls(
             twilio_auth_token=e.text("TWILIO_AUTH_TOKEN") or "",
             public_base_url=base,
@@ -168,7 +174,8 @@ class Settings:
             openai_model=e.text("OPENAI_MODEL"),
             system_prompt=e.text("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT) or "",
             history_turns=e.integer("HISTORY_TURNS", 12),
-            agent_timeout_seconds=e.number("AGENT_TIMEOUT_SECONDS", 120.0, minimum=1.0),
+            agent_timeout_seconds=agent_timeout,
+            agent_turn_limit_seconds=turn_limit,
             workers=e.integer("WORKERS", 8, minimum=1, maximum=256),
             max_queued_per_sender=e.integer("MAX_QUEUED_PER_SENDER", 10, minimum=1),
             max_queued_total=e.integer("MAX_QUEUED_TOTAL", 1000, minimum=1),

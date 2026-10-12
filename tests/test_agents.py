@@ -239,6 +239,14 @@ async def test_openai_agent_describes_attachments_in_the_user_turn(aiohttp_serve
         "what is this receipt?\n[attachment: image/png https://example.com/media/7]")
 
 
+def test_only_in_process_backends_promise_that_cancelling_a_call_ends_the_turn():
+    # the bridge cancels these at a timeout; a webhook agent may keep working after a hang-up,
+    # so its timed-out calls are kept open instead
+    assert EchoAgent.cancel_ends_turn
+    assert OpenAIChatAgent.cancel_ends_turn
+    assert not WebhookAgent.cancel_ends_turn
+
+
 def test_conversation_memory_evicts_the_least_recent_session():
     memory = ConversationMemory(max_turns=4, max_sessions=2)
     memory.record("a", "hi", "hello")

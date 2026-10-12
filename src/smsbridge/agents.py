@@ -10,7 +10,13 @@ The bridge only needs `reply(request) -> str`. Three backends ship with it:
 Every request carries an explicit per-sender `session_id`. Agent runtimes that default to a
 single shared session will otherwise mix everybody's conversations together - one sender can
 be read back another sender's details. Keying the session on the phone number, and never
-running two turns for the same number at once (see `scheduler.py`), keeps conversations apart.
+running two turns for the same number at once (see `scheduler.py`, and `bridge.py` for what
+happens after a timeout), keeps conversations apart.
+
+A backend can set `cancel_ends_turn = True` when cancelling its `reply()` ends the turn for good:
+nothing keeps running elsewhere and nothing is written afterwards. The bridge then cancels a
+call that times out. Without it, a timed-out call is kept open until it ends, because a remote
+agent usually keeps working after its caller hangs up.
 
 Contract for replies: a string is sent; an *explicit* empty reply means "nothing to say".
 Anything else - an HTTP error, an empty or malformed body, an empty completion - raises
@@ -62,6 +68,8 @@ class AgentBackend(Protocol):
 
 
 class EchoAgent:
+    cancel_ends_turn = True
+
     async def reply(self, request: AgentRequest) -> str:
         if request.text:
             return f"You said: {request.text}"
@@ -115,6 +123,10 @@ class WebhookAgent(_HttpBackend):
 
     Reply with `{"reply": ""}`, `{"reply": null}` or HTTP 204 to send nothing.
     """
+
+    # The agent may keep working after the connection closes, so a timed-out call is kept
+    # open: the sender's next text waits until the agent answers (or the turn limit passes).
+    cancel_ends_turn = False
 
     def __init__(self, url: str, *, token: str | None = None,
                  session: aiohttp.ClientSession | None = None) -> None:
@@ -188,6 +200,9 @@ class OpenAIChatAgent(_HttpBackend):
     only safe because the scheduler never runs two turns for the same sender concurrently.
     A failed turn is not recorded, so a retry is not stacked on top of it.
     """
+
+    # The history lives here, so a cancelled call records nothing and the turn is over.
+    cancel_ends_turn = True
 
     def __init__(self, *, base_url: str, api_key: str, model: str,
                  system_prompt: str = DEFAULT_SYSTEM_PROMPT, history_turns: int = 12,

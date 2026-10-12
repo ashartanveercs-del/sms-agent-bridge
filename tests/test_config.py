@@ -80,6 +80,17 @@ def test_numbers_booleans_and_lists_are_parsed():
     assert s.resend_suffix == " (resent)"
 
 
+def test_the_turn_limit_defaults_to_ten_minutes_and_never_undercuts_the_timeout():
+    assert Settings.from_env(BASE).agent_turn_limit_seconds == 600
+    s = Settings.from_env({**BASE, "AGENT_TIMEOUT_SECONDS": "900"})
+    assert s.agent_turn_limit_seconds == 900
+    s = Settings.from_env({**BASE, "AGENT_TURN_LIMIT_SECONDS": "180"})
+    assert s.agent_turn_limit_seconds == 180
+    with pytest.raises(ConfigError, match="AGENT_TURN_LIMIT_SECONDS"):
+        Settings.from_env({**BASE, "AGENT_TIMEOUT_SECONDS": "60",
+                           "AGENT_TURN_LIMIT_SECONDS": "30"})
+
+
 @pytest.mark.parametrize(("name", "value"), [
     ("WORKERS", "many"), ("WORKERS", "0"), ("PORT", "70000"), ("DRY_RUN", "perhaps"),
     ("GSM_MODE", "fancy"), ("MAX_REPLY_PARTS", "0"), ("AGENT_TIMEOUT_SECONDS", "-1"),
