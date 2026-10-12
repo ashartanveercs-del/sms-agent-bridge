@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import pytest
@@ -70,6 +71,33 @@ async def test_transport_errors_become_send_errors():
     with pytest.raises(SendError) as err:
         await gateway(StubTwilioClient(fail_with=ConnectionError("down"))).send("+1555", "hi")
     assert err.value.code is None
+
+
+def test_the_sdk_client_is_built_with_an_http_timeout():
+    # the SDK's default is no timeout at all: one dead connection would hang a thread forever
+    gw = TwilioGateway("ACtest", TOKEN, from_number="+15550000000", api_timeout=7)
+    assert gw._client.http_client.timeout == 7
+
+
+async def test_a_send_that_hangs_gives_up_at_the_deadline():
+    client = StubTwilioClient()
+    client.hang.add("+15550000101")
+    try:
+        with pytest.raises(SendError, match="did not answer"):
+            await asyncio.wait_for(
+                gateway(client, api_timeout=0.1).send("+15550000101", "hi"), 2)
+    finally:
+        client.release.set()
+
+
+async def test_a_status_lookup_that_hangs_gives_up_at_the_deadline():
+    client = StubTwilioClient()
+    client.hang.add("SM9")
+    try:
+        with pytest.raises(SendError, match="did not answer"):
+            await asyncio.wait_for(gateway(client, api_timeout=0.1).fetch_status("SM9"), 2)
+    finally:
+        client.release.set()
 
 
 async def test_fetch_status_reads_status_and_error_code():

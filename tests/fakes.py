@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -71,25 +72,39 @@ class _StubMessages:
         self._client = client
 
     def create(self, **kwargs: Any) -> SimpleNamespace:
+        self._client.maybe_hang(kwargs.get("to", ""))
         if self._client.fail_with is not None:
             raise self._client.fail_with
         self._client.created.append(kwargs)
         return SimpleNamespace(sid=f"SM{len(self._client.created):032x}", status="queued")
 
     def __call__(self, sid: str) -> SimpleNamespace:
-        status, error_code = self._client.statuses.get(sid, ("sent", None))
-        return SimpleNamespace(
-            fetch=lambda: SimpleNamespace(sid=sid, status=status, error_code=error_code))
+        def fetch() -> SimpleNamespace:
+            self._client.maybe_hang(sid)
+            status, error_code = self._client.statuses.get(sid, ("sent", None))
+            return SimpleNamespace(sid=sid, status=status, error_code=error_code)
+
+        return SimpleNamespace(fetch=fetch)
 
 
 class StubTwilioClient:
-    """Stand-in for `twilio.rest.Client` - records calls, never touches the network."""
+    """Stand-in for `twilio.rest.Client` - records calls, never touches the network.
+
+    A call that sends to, or looks up, anything in `hang` blocks its thread until `release`
+    is set (5 s at most), like a request on a dead connection with no timeout.
+    """
 
     def __init__(self, fail_with: Exception | None = None) -> None:
         self.created: list[dict[str, Any]] = []
         self.statuses: dict[str, tuple[str, int | None]] = {}
         self.fail_with = fail_with
+        self.hang: set[str] = set()
+        self.release = threading.Event()
         self.messages = _StubMessages(self)
+
+    def maybe_hang(self, target: str) -> None:
+        if target in self.hang:
+            self.release.wait(5)
 
 
 class ScriptedAgent:

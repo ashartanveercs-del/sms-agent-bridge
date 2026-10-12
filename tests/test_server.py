@@ -3,13 +3,21 @@ from collections import Counter
 
 import pytest
 from aiohttp import web
-from fakes import AUTH_TOKEN, FakeGateway, ScriptedAgent
+from fakes import AUTH_TOKEN, FakeGateway, ScriptedAgent, StubTwilioClient
 from twilio.request_validator import RequestValidator
 
 from smsbridge.agents import EchoAgent, OpenAIChatAgent, WebhookAgent
 from smsbridge.config import Settings
-from smsbridge.server import DELIVERY, GATEWAY, SCHEDULER, build_agent, create_app, settle
-from smsbridge.twilio_gateway import DryRunGateway
+from smsbridge.server import (
+    BRIDGE,
+    DELIVERY,
+    GATEWAY,
+    SCHEDULER,
+    build_agent,
+    create_app,
+    settle,
+)
+from smsbridge.twilio_gateway import DryRunGateway, TwilioGateway
 
 BASE_URL = "https://sms.example.com"
 SENDER = "+15550000101"
@@ -246,6 +254,23 @@ async def test_a_timed_out_turn_keeps_the_senders_next_text_waiting(aiohttp_clie
                              ("start", "second"), ("end", "second")]
     # the timeout note went out on time; the late answer to "first" is dropped
     assert gateway.bodies_to(SENDER) == ["Still on it - try again shortly.", "answer to second"]
+
+
+async def test_a_hung_twilio_call_does_not_hold_up_other_senders(aiohttp_client):
+    twilio = StubTwilioClient()
+    twilio.hang.add(SENDER)  # the API never answers the send to this number
+    gw = TwilioGateway("ACtest", AUTH_TOKEN, from_number="+15550000000", client=twilio,
+                       api_timeout=0.2)
+    client = await aiohttp_client(create_app(make_settings(workers=1), gateway=gw,
+                                             agent=ScriptedAgent()))
+    try:
+        await post_signed(client, sms(body="first", sid="SMa"))
+        await post_signed(client, sms(body="second", sender="+15550000102", sid="SMb"))
+        await settled(client.app)
+        assert [m["to"] for m in twilio.created] == ["+15550000102"]
+        assert client.app[BRIDGE].stats()["send_failed"] == 1
+    finally:
+        twilio.release.set()
 
 
 async def test_unsigned_status_callbacks_are_rejected(client):

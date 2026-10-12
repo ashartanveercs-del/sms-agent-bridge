@@ -8,7 +8,7 @@ strips internal errors before they reach a phone, and checks that every reply wa
 
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-260%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-264%20passing-brightgreen)
 
 ```text
 Phone   +1 555 000 0101:  "is repair 1001 ready? and when are you open?"
@@ -30,7 +30,7 @@ Bridge  -> phone:          "Good news - repair #1001 is ready. We're open Tue-Sa
 | **Delivery verification** | Status callbacks plus one delayed status re-check. A delivery failure gets exactly one resend, and none at all for opt-outs, landlines or carrier filtering. |
 | **Pluggable agent** | `webhook` (your own agent behind HTTP), `openai` (any OpenAI-compatible `/chat/completions`, with per-sender history) or `echo` for demos. |
 | **Guard rails** | Per-sender rate limit and backlog caps with one polite notice per window, carrier keywords (STOP, HELP, ...) kept away from the agent, optional sender allowlist, masked phone numbers in logs, dry-run mode and `/healthz` counters. |
-| **Tested without a phone** | 260 tests, all offline. Twilio, the model and your agent are faked. A concurrency proof fires 12 senders at once through the real HTTP app. |
+| **Tested without a phone** | 264 tests, all offline. Twilio, the model and your agent are faked. A concurrency proof fires 12 senders at once through the real HTTP app. |
 
 ## Architecture
 
@@ -74,6 +74,7 @@ flowchart LR
 | [`sanitize.py`](src/smsbridge/sanitize.py) | drops diagnostics, masks credentials, falls back to a neutral reply |
 | [`delivery.py`](src/smsbridge/delivery.py) | status callbacks, delayed re-check, exactly-once resend |
 | [`agents.py`](src/smsbridge/agents.py) | `echo`, `webhook` and OpenAI-compatible backends; per-session history |
+| [`twilio_gateway.py`](src/smsbridge/twilio_gateway.py) | Twilio SDK calls in a thread with a 10 s deadline, so a dead connection fails one send instead of holding a worker; dry-run stand-in |
 | [`dedupe.py`](src/smsbridge/dedupe.py), [`ratelimit.py`](src/smsbridge/ratelimit.py), [`phone.py`](src/smsbridge/phone.py) | MessageSid claims, sliding window, keywords and number masking |
 
 ### The parts that are harder than they look
@@ -268,7 +269,7 @@ on top of them.
 ## Testing
 
 ```bash
-pytest                              # 260 tests, ~4 s, no Twilio, model or network beyond localhost
+pytest                              # 264 tests, ~4 s, no Twilio, model or network beyond localhost
 ruff check src tests examples
 ```
 
@@ -277,7 +278,7 @@ ruff check src tests examples
 - an in-memory messaging gateway that records sends and serves scripted statuses. Its status
   lookups can be parked on an event, so a test lands a status callback *while* a re-check is
   mid-flight, deterministically;
-- a stub of the Twilio SDK client;
+- a stub of the Twilio SDK client, which can also hang a call the way a dead connection does;
 - a scripted agent.
 
 Webhook and model backends are tested against local aiohttp servers, including one that drops
