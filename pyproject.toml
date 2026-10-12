@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sms-agent-bridge"
+version = "0.1.0"
+description = "Production SMS front-end for any AI agent: per-sender ordering with a fair worker pool, Twilio signature checks, GSM-7-safe text, error sanitisation and delivery verification."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Ashar Tanveer" }]
+keywords = ["sms", "twilio", "llm-agents", "chatbot", "gsm-7", "aiohttp", "webhooks"]
+classifiers = [
+    "Framework :: AsyncIO",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Telephony",
+]
+dependencies = [
+    "aiohttp>=3.9",
+    "multidict>=4.5",
+    "twilio>=9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-aiohttp>=1.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+sms-agent-bridge = "smsbridge.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/smsbridge"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# test helpers poll with explicit timeouts on purpose
+"tests/*" = ["ASYNC109", "ASYNC110"]
