@@ -8,7 +8,7 @@ strips internal errors before they reach a phone, and checks that every reply wa
 
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-273%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-276%20passing-brightgreen)
 
 ```text
 Phone   +1 555 000 0101:  "is repair 1001 ready? and when are you open?"
@@ -30,7 +30,7 @@ Bridge  -> phone:          "Good news - repair #1001 is ready. We're open Tue-Sa
 | **Delivery verification** | Status callbacks plus one delayed status re-check. A delivery failure gets exactly one resend, and none at all for opt-outs, landlines or carrier filtering. |
 | **Pluggable agent** | `webhook` (your own agent behind HTTP), `openai` (any OpenAI-compatible `/chat/completions`, with per-sender history) or `echo` for demos. |
 | **Guard rails** | Per-sender rate limit and backlog caps with one polite notice per window, carrier keywords (STOP, HELP, ...) kept away from the agent, optional sender allowlist, masked phone numbers in logs, dry-run mode and `/healthz` counters. |
-| **Tested without a phone** | 273 tests, all offline. Twilio, the model and your agent are faked. A concurrency proof fires 12 senders at once through the real HTTP app. |
+| **Tested without a phone** | 276 tests, all offline. Twilio, the model and your agent are faked. A concurrency proof fires 12 senders at once through the real HTTP app. |
 
 ## Architecture
 
@@ -89,10 +89,14 @@ puts the sender at the back of the rotation if more is waiting. A message that a
 its sender is busy just waits in the deque. Different senders still run in parallel, up to the
 pool size. [`test_concurrency.py`](tests/test_concurrency.py) fires 12 senders × 3
 back-to-back texts at the same moment through signed HTTP into the real app and the real
-OpenAI-compatible backend. The fake model answers *only* from the history it is sent, so a
-leaked word, a wrong message count or a reordered reply fails the test. A control run with a
-deliberately shared session fails the same checks, and so does a scheduler mutant that lets a
-sender into the rotation twice.
+OpenAI-compatible backend. A second run sends each sender's follow-ups while its first turn is
+still held open at the model, with a free worker standing by to take them early. The fake
+model answers *only* from the history it is sent, and an instrumented backend counts each
+session's turns in flight. A leaked word, a wrong message count, a reordered reply, two turns
+of one sender at once, or a stale entry in the scheduler's rotation fails the test. Control
+runs fail the same checks: one with a deliberately shared session, one with a plain worker
+pool that has no per-sender lock, and one with a scheduler that lets a sender into the
+rotation twice.
 
 **2. Acknowledge first. Claim the MessageSid, and release it if the hand-off fails.** Twilio
 waits up to 15 seconds for a webhook, and agent turns routinely take longer. So the reply never
@@ -273,7 +277,7 @@ on top of them.
 ## Testing
 
 ```bash
-pytest                              # 273 tests, ~4 s, no Twilio, model or network beyond localhost
+pytest                              # 276 tests, ~5 s, no Twilio, model or network beyond localhost
 ruff check src tests examples
 ```
 
