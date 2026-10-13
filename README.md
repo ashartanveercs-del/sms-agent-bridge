@@ -1,14 +1,28 @@
 # sms-agent-bridge
 
-**A production SMS front-end for any AI agent.** Put it between a Twilio number and your agent
-(any HTTP endpoint, or any OpenAI-compatible model) and it handles the parts of SMS that quietly
-go wrong. It answers Twilio in milliseconds and runs each person's conversation strictly in order
-while serving many people at once. It keeps replies GSM-7-clean so they cost what they should,
-strips internal errors before they reach a phone, and checks that every reply was delivered.
+**Concurrent SMS conversations with ordering, isolation, and delivery reconciliation.**
+Put this bridge between Twilio and any HTTP agent or OpenAI-compatible model. A fair worker pool
+preserves each sender's conversation while serving different senders in parallel. A shared
+outbound pipeline sanitizes replies, accounts for GSM-7 segments, and reconciles delivery reports.
 
+[![CI](https://github.com/ashartanveercs-del/sms-agent-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ashartanveercs-del/sms-agent-bridge/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Tests](https://img.shields.io/badge/tests-276%20passing-brightgreen)
+
+[Offline demo](#try-it-locally-no-twilio-account-nothing-sent) · [Agent integration](#plug-in-your-agent) ·
+[Design](#whats-inside) · [Verification](docs/VERIFICATION.md)
+
+## Engineering highlights
+
+| Hard problem | Implementation | Reproducible evidence |
+| --- | --- | --- |
+| Many senders without lost conversation turns | Per-sender FIFO queues, one active turn per sender, and a bounded pool with round-robin fairness. | [Concurrency proofs](tests/test_concurrency.py), including deliberately broken isolation and scheduling variants |
+| Two observers see the same delivery failure | Callback and delayed re-check reports advance a monotonic status machine; a recoverable failure schedules one resend. | [Delivery race tests](tests/test_delivery.py) |
+| Model text crosses a paid carrier boundary | Flatten Markdown, sanitize known error and credential shapes, count GSM-7/UTF-16 units, and split at natural boundaries. | [Sanitizer cases](tests/test_sanitize.py), [segment accounting](tests/test_gsm7.py) |
+
+The demo below and the [concurrency demo](examples/concurrency_demo.py) use synthetic numbers;
+the concurrency demo exercises signed local webhooks without sending any SMS.
 
 ```text
 Phone   +1 555 000 0101:  "is repair 1001 ready? and when are you open?"
