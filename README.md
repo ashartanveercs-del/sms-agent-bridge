@@ -21,8 +21,9 @@ outbound pipeline sanitizes replies, accounts for GSM-7 segments, and reconciles
 | Two observers see the same delivery failure | Callback and delayed re-check reports advance a monotonic status machine; a recoverable failure schedules one resend. | [Delivery race tests](tests/test_delivery.py) |
 | Model text crosses a paid carrier boundary | Flatten Markdown, sanitize known error and credential shapes, count GSM-7/UTF-16 units, and split at natural boundaries. | [Sanitizer cases](tests/test_sanitize.py), [segment accounting](tests/test_gsm7.py) |
 
-The demo below and the [concurrency demo](examples/concurrency_demo.py) use synthetic numbers;
-the concurrency demo exercises signed local webhooks without sending any SMS.
+The flow below illustrates the live integration with synthetic numbers. The runnable
+[concurrency demo](examples/concurrency_demo.py) exercises signed local webhooks without
+sending any SMS; it does not verify carrier receipt.
 
 ```text
 Phone   +1 555 000 0101:  "is repair 1001 ready? and when are you open?"
