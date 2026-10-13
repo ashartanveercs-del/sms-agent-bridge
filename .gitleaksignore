@@ -1,0 +1,3 @@
+# Exact historical findings for reviewed synthetic fixtures only.
+# No directory, file, or test-suite blanket exclusions. See docs/SECURITY-AUDIT.md.
+58760925c9f42daaaf00be7b7e03b94eda700f93:tests/test_sanitize.py:generic-api-key:125

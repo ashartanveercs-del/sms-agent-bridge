@@ -338,6 +338,11 @@ SDK's `RequestValidator`. CI also runs the concurrency demo and the `inspect` co
 - Other channels (WhatsApp, RCS) through the same pipeline, with their own length rules
 - Prometheus metrics alongside `/healthz`
 
+## Secret scanning
+
+[Full-history audit and secret-scan CI](docs/SECURITY-AUDIT.md). Configuration examples and
+synthetic fixtures were reviewed before publication; new credential findings fail the gate.
+
 ## License
 
 MIT
